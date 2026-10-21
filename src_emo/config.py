@@ -29,4 +29,6 @@ def seed_torch(seed: int = 42) -> None:
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.enabled = False
     print(f"Random seed set as {seed}")
-    torch.set_deterministic(True)
+    # PATCH 1: torch.set_deterministic was renamed in newer PyTorch. warn_only=True because
+    # some GPU graph ops have no deterministic implementation. See PATCHES.md.
+    torch.use_deterministic_algorithms(True, warn_only=True)

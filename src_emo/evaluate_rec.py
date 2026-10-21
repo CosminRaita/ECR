@@ -17,6 +17,13 @@ class RecEvaluator:
         self.log_file = open("save/redial_rec/rec.json", 'w', buffering=1)
         self.log_cnt = 0
 
+        # PATCH 3: evaluation logging only. Dumps the two values evaluate_AUC consumes, one
+        # line per example, so AUC can be recomputed offline at any batch size. Nothing that
+        # feeds a metric is touched. See PATCHES.md.
+        self.auc_dump = open("save/redial_rec/auc_dump.jsonl", 'w', buffering=1)
+        self.auc_phase = 0
+        self.auc_batch_idx = 0
+
         with open('data/redial/entity2id.json', 'r', encoding='utf-8') as f:
             entity2id = json.load(f)
         self.id2entity = {idx:entity for entity,idx in entity2id.items()}
@@ -56,6 +63,18 @@ class RecEvaluator:
         pre = []
         for logit, label in zip(logits.tolist(), labels.tolist()):
             pre.append(logit[label])
+        # PATCH 3: see __init__. Written before the AUC sum so the dump is the evaluator's
+        # own input, batch boundaries included.
+        for i in range(len(pre)):
+            self.auc_dump.write(json.dumps({
+                'phase': self.auc_phase,
+                'batch': self.auc_batch_idx,
+                'score': pre[i],
+                'sent': float(mse_met[0][i]),
+                'label': int(labels.tolist()[i]),
+            }) + '\n')
+        self.auc_batch_idx += 1
+
         pos = [i for i in range(len(mse_met[0])) if mse_met[0][i] == 1]
         neg = [i for i in range(len(mse_met[0])) if mse_met[0][i] == 0]
         auc = 0
@@ -96,6 +115,12 @@ class RecEvaluator:
         return 0
 
     def reset_metric(self):
+        # PATCH 3: train_rec.py resets between the valid and test loops, so this marks the
+        # boundary in the dump. hasattr guards the call __init__ makes before setup.
+        if hasattr(self, 'auc_phase'):
+            self.auc_phase += 1
+            self.auc_batch_idx = 0
+
         for metric in ['recall', 'ndcg', 'mrr']:
             for k in self.k_list:
                 self.metric[f'{metric}@{k}'] = 0

@@ -3,7 +3,9 @@ import math
 import os
 import sys
 import time
-os.environ["CUDA_VISIBLE_DEVICES"] = "3"
+# PATCH 2: pinned the process to GPU 3, which does not exist under Slurm --gres=gpu:1
+# (or on a single-GPU machine), leaving torch with no visible device. See PATCHES.md.
+# os.environ["CUDA_VISIBLE_DEVICES"] = "3"
 import numpy as np
 import torch
 import random

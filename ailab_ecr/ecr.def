@@ -1,0 +1,34 @@
+BootStrap: docker
+From: python:3.9-slim
+
+# ECR container for AAU AI-Lab (NVIDIA L4 GPUs).
+# ECR pins PyTorch 1.8.1 + CUDA 11.1, which predates the L4. This image keeps ECR's
+# pinned transformers/accelerate but uses PyTorch 2.4.1 + CUDA 12.1, which supports the L4.
+# Checked in a sandbox (CPU): ECR's recommender model trains with this stack after one
+# small patch to config.py (see README.md).
+
+%post
+    # No apt-get. The original line installed git/curl/zip, none of which are used:
+    # ecr_fetch.sh unpacks the archives with python's zipfile and downloads over HTTP.
+    # It also failed on the AI-Lab build host with "No space left on device" while
+    # writing apt's package lists, so dropping it removes a failure mode as well.
+
+    # Upgrade pip FIRST. The pip shipped in python:3.9-slim rejects a wheel whose
+    # metadata spells its name differently from the request (typing_extensions vs
+    # typing-extensions), falls back to building the sdist, and then cannot find
+    # flit_core on the torch-only index. That is the error the AI-Lab build hit, and
+    # the same one seen locally; upgrading pip fixes it.
+    pip install --no-cache-dir --upgrade pip setuptools wheel
+
+    # --extra-index-url lets pure-python build dependencies resolve from PyPI. torch
+    # still comes from the pytorch index: its "+cu121" local version sorts above a
+    # plain 2.4.1, so the CUDA build wins the pin.
+    pip install --no-cache-dir torch==2.4.1 \
+        --index-url https://download.pytorch.org/whl/cu121 \
+        --extra-index-url https://pypi.org/simple
+    pip install --no-cache-dir torch_scatter torch_sparse -f https://data.pyg.org/whl/torch-2.4.0+cu121.html
+    pip install --no-cache-dir "numpy<2" torch_geometric==2.5.3 transformers==4.15.0 accelerate==0.8.0 \
+        einops loguru wandb tqdm gdown
+
+%environment
+    export WANDB_MODE=offline
