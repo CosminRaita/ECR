@@ -107,6 +107,109 @@ Not listed in CLAUDE.md §5.6; approved explicitly on 2026-10-16.
 
 ---
 
+## Patch 4 — `src_emo/evaluate_rec.py`, `src_emo/train_rec.py`: global AUC
+
+**Why.** `evaluate_AUC` forms (liked, disliked) pairs only *within* a batch, drops any batch
+missing one of the two classes via a bare `except: pass`, and averages the survivors
+unweighted. On the test split there are 3601 liked and 259 disliked examples, so AUC is
+defined over 932,659 pairs; at `--per_device_eval_batch_size 32` the reported value comes
+from about 6,300 of them, 0.68%. That is why it moves from 0.524 to 0.596 with batch size
+while every recall metric holds to within 0.004, and why it cannot be compared against any
+other implementation's AUC.
+
+`global_auc()` computes one AUC over the whole split from the accumulated scores, using
+mid-ranks (Mann-Whitney U). Verified identical to ECR's double loop, ties included, on 300
+random cases (max difference 0.00e+00). Nothing is dropped and the result does not depend
+on the batch size.
+
+**ECR's own `auc` is still computed and still reported.** The new value is reported beside
+it as `auc_global`, so earlier measurements stay comparable. No confidence interval is
+computed here: that belongs in SeedGuard's stats layer, and the inputs are already in the
+Patch 3 dump.
+
+```diff
+ # evaluate_rec.py, evaluate_AUC, after the Patch 3 dump
++        for i in range(len(pre)):
++            sent = float(mse_met[0][i])
++            if sent in (0.0, 1.0):
++                self.auc_scores.append(pre[i])
++                self.auc_sents.append(sent)
++
+         pos = [i for i in range(len(mse_met[0])) if mse_met[0][i] == 1]
+
+ # evaluate_rec.py, new method before reset_metric
++    def global_auc(self):
++        pos = [v for v, y in zip(self.auc_scores, self.auc_sents) if y == 1.0]
++        neg = [v for v, y in zip(self.auc_scores, self.auc_sents) if y == 0.0]
++        ... mid-ranks over sorted(pos + neg) ...
++        return (rank_sum - n_pos * (n_pos + 1) / 2.0) / (n_pos * n_neg)
+
+ # evaluate_rec.py, reset_metric
+         self.metric_add['batch_count'] = 0
++        self.auc_scores = []
++        self.auc_sents = []
+
+ # evaluate_rec.py, report
+     def report(self):
++        self.metric_add['auc_global'] = self.global_auc()
++        self.metric_add['auc_global_count'] = 1
+
+ # train_rec.py, all four report blocks (lines 326, 392, 501, 566)
+         valid_report['valid/auc'] = report_add['auc_batch'] / report_add['batch_count']
++        valid_report['valid/auc_global'] = report_add['auc_global'] / report_add['auc_global_count']
+```
+
+**Single-process only.** `train_rec.py` consumes `report()` as `accelerator.gather(...).sum()`.
+With one process that returns the value unchanged. Under multiple processes it would sum
+per-process AUCs; the raw lists would have to be gathered instead. We run one GPU per job.
+
+---
+
+## Patch 5 — `src_emo/train_rec.py`: `--context_mask`
+
+**Why.** `dataset_rec.py` (214-240) builds a mask of every entity already mentioned in the
+conversation, and ECR ships with the two lines that apply it **commented out** in the
+`--test` branch (around 297-298 and 362-363). The in-training evaluation never had those
+lines at all, so a `--test` run and `train_rec.py`'s own per-epoch evaluation would measure
+different things once the mask was enabled. All four sites now behave the same.
+
+Enabling it is **not a pure bug fix**: the mask is built from the cumulative context, so a
+target mentioned earlier in the conversation becomes unrankable and the example is a
+guaranteed miss. ReDial's ground truth sometimes *is* such a repeat. The authors measured
+this and left the counter in the code — `data/redial/process_mask.py` 159-162 counts targets
+already present in the context and prints `cnt, cnt_total`. Run that first; it bounds how
+much of any recall drop is unanswerable rather than deserved.
+
+**Off by default**, so ECR's published behaviour and our reproduction table are unchanged,
+and masked vs unmasked is a command-line difference rather than a code difference.
+
+Affects `recall@k`, `mrr@k`, `ndcg@k` and `recall_true@k` only. `evaluate_AUC` and
+`evaluate_mse` both read `F.softmax(outputs.rec_logits)`, the unmasked all-entity tensor, so
+AUC and MSE are untouched. The mask therefore cannot explain the batch-size AUC finding;
+the two are independent.
+
+```diff
+ # train_rec.py, parse_args
++    parser.add_argument("--context_mask", action="store_true",
++                        help="Exclude entities already mentioned in the conversation from the candidate set when ranking.")
+
+ # train_rec.py, the two --test sites
+-                # context_entities_mask = batch["context_entities_mask_batch"]
+-                # logits = logits.masked_fill(context_entities_mask, -1.0e25)
++                if args.context_mask:
++                    logits = logits.masked_fill(batch["context_entities_mask_batch"], -1.0e25)
+                 logits = logits[:, kg['item_ids']]
+
+ # train_rec.py, the two in-training sites
+-                    logits = outputs.rec_logits[:, kg['item_ids']]
++                    logits = outputs.rec_logits
++                    if args.context_mask:
++                        logits = logits.masked_fill(batch["context_entities_mask_batch"], -1.0e25)
++                    logits = logits[:, kg['item_ids']]
+```
+
+---
+
 ## Considered and *not* patched
 
 **`data/saved/pre-trained` vs `data/saved/pre`.** `train_pre.py` defaults to
@@ -137,12 +240,12 @@ deterministic); wandb is imported unconditionally — we run with `WANDB_MODE=of
 
 ## Reserved
 
-**Patch 4 (conditional) — no `torch_sparse`.** Not needed: `torch_sparse 0.6.18+pt24cu121`
+**Patch 6 (conditional) — no `torch_sparse`.** Not needed: `torch_sparse 0.6.18+pt24cu121`
 installed and ran fine on torch 2.4.1. If a future environment lacks it, swap
 `model_prompt.py` line 132 for the commented line 133 and stop wrapping `edge_index` in a
 `SparseTensor` in `dataset_dbpedia.py` lines 55-57 (CLAUDE.md §5.6 item 2).
 
-**Patch 5 (likely, for SeedGuard) — dump ranked lists.** `evaluate_rec.py` currently logs
+**Patch 7 (likely, for SeedGuard) — dump ranked lists.** `evaluate_rec.py` currently logs
 only the top-1 item, and only in `--test` mode. SeedGuard needs the full top-50 ranking per
 example so metrics and agreement measures (Jaccard, RBO) can be computed later from stored
 predictions without re-running on a GPU. To be proposed when we reach T2/T3.

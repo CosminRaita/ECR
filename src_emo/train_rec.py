@@ -33,6 +33,8 @@ from  co_appear import TOCoAppear
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--seed", type=int, default=42, help="A seed for reproducible training.")
+    parser.add_argument("--context_mask", action="store_true",
+                        help="Exclude entities already mentioned in the conversation from the candidate set when ranking.")
     parser.add_argument("--output_dir", type=str, default='data/saved/rec', help="Where to store the final model.")
     parser.add_argument("--debug", action='store_true', help="Debug mode.")
     # data
@@ -294,8 +296,8 @@ if __name__ == '__main__':
                 valid_loss.append(float(outputs.rec_loss))
                 logits = outputs.rec_logits
 
-                # context_entities_mask = batch["context_entities_mask_batch"]
-                # logits = logits.masked_fill(context_entities_mask, -1.0e25)
+                if args.context_mask:
+                    logits = logits.masked_fill(batch["context_entities_mask_batch"], -1.0e25)
                 logits = logits[:, kg['item_ids']]
 
                 ranks = torch.topk(logits, k=50, dim=-1).indices.tolist()
@@ -321,6 +323,7 @@ if __name__ == '__main__':
         valid_report['valid/mse'] = report_add['mse'] / report_add['count_mse']
         valid_report['valid/mse_neg'] = report_add['mse_neg'] / report_add['count_mse_neg']
         valid_report['valid/auc'] = report_add['auc_batch'] / report_add['batch_count']
+        valid_report['valid/auc_global'] = report_add['auc_global'] / report_add['auc_global_count']
         for k in [1,10,50]:
             valid_report[f'valid/recall_true@{k}'] = report_add[f'recall_true@{k}']/report_add['count_true']
 
@@ -359,8 +362,8 @@ if __name__ == '__main__':
                 outputs = model(**batch['context'], weighted_loss=args.weighted_loss, rec=True, use_sentiment = args.use_sentiment, copy_logit = copy_logit, copy_w = args.copy_w)
                 test_loss.append(float(outputs.rec_loss))
                 logits = outputs.rec_logits
-                # context_entities_mask = batch["context_entities_mask_batch"]
-                # logits = logits.masked_fill(context_entities_mask, -1.0e25)
+                if args.context_mask:
+                    logits = logits.masked_fill(batch["context_entities_mask_batch"], -1.0e25)
                 logits = logits[:, kg['item_ids']]
 
                 ranks = torch.topk(logits, k=50, dim=-1).indices.tolist()
@@ -386,6 +389,7 @@ if __name__ == '__main__':
         test_report['test/mse'] = report_add['mse'] / report_add['count_mse']
         test_report['test/mse_neg'] = report_add['mse_neg'] / report_add['count_mse_neg']
         test_report['test/auc'] = report_add['auc_batch'] / report_add['batch_count']
+        test_report['test/auc_global'] = report_add['auc_global'] / report_add['auc_global_count']
         for k in [1, 10, 50]:
             test_report[f'test/recall_true@{k}'] = report_add[f'recall_true@{k}'] / report_add['count_true']
 
@@ -466,7 +470,10 @@ if __name__ == '__main__':
                     labels = batch['context']['rec_labels']
                     outputs = model(**batch['context'], rec=True, weighted_loss=args.weighted_loss, use_sentiment = args.use_sentiment, copy_logit = copy_logit, copy_w = args.copy_w)
                     valid_loss.append(float(outputs.rec_loss))
-                    logits = outputs.rec_logits[:, kg['item_ids']]
+                    logits = outputs.rec_logits
+                    if args.context_mask:
+                        logits = logits.masked_fill(batch["context_entities_mask_batch"], -1.0e25)
+                    logits = logits[:, kg['item_ids']]
                     ranks = torch.topk(logits, k=50, dim=-1).indices.tolist()
                     ranks = [[kg['item_ids'][rank] for rank in batch_rank] for batch_rank in ranks]
 
@@ -491,6 +498,7 @@ if __name__ == '__main__':
             valid_report['valid/mse'] = report_add['mse'] / report_add['count_mse']
             valid_report['valid/mse_neg'] = report_add['mse_neg'] / report_add['count_mse_neg']
             valid_report['valid/auc'] = report_add['auc_batch'] / report_add['batch_count']
+            valid_report['valid/auc_global'] = report_add['auc_global'] / report_add['auc_global_count']
             for k in [1, 10, 50]:
                 valid_report[f'valid/recall_true@{k}'] = report_add[f'recall_true@{k}'] / report_add['count_true']
 
@@ -528,7 +536,10 @@ if __name__ == '__main__':
 
                     outputs = model(**batch['context'], weighted_loss=args.weighted_loss, rec=True, use_sentiment = args.use_sentiment, copy_logit = copy_logit, copy_w = args.copy_w)
                     test_loss.append(float(outputs.rec_loss))
-                    logits = outputs.rec_logits[:, kg['item_ids']]
+                    logits = outputs.rec_logits
+                    if args.context_mask:
+                        logits = logits.masked_fill(batch["context_entities_mask_batch"], -1.0e25)
+                    logits = logits[:, kg['item_ids']]
                     ranks = torch.topk(logits, k=50, dim=-1).indices.tolist()
                     ranks = [[kg['item_ids'][rank] for rank in batch_rank] for batch_rank in ranks]
                     labels = batch['context']['rec_labels']
@@ -552,6 +563,7 @@ if __name__ == '__main__':
             test_report['test/mse'] = report_add['mse'] / report_add['count_mse']
             test_report['test/mse_neg'] = report_add['mse_neg'] / report_add['count_mse_neg']
             test_report['test/auc'] = report_add['auc_batch'] / report_add['batch_count']
+            test_report['test/auc_global'] = report_add['auc_global'] / report_add['auc_global_count']
             for k in [1, 10, 50]:
                 test_report[f'test/recall_true@{k}'] = report_add[f'recall_true@{k}'] / report_add['count_true']
 

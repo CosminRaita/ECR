@@ -75,6 +75,12 @@ class RecEvaluator:
             }) + '\n')
         self.auc_batch_idx += 1
 
+        for i in range(len(pre)):
+            sent = float(mse_met[0][i])
+            if sent in (0.0, 1.0):
+                self.auc_scores.append(pre[i])
+                self.auc_sents.append(sent)
+
         pos = [i for i in range(len(mse_met[0])) if mse_met[0][i] == 1]
         neg = [i for i in range(len(mse_met[0])) if mse_met[0][i] == 0]
         auc = 0
@@ -114,6 +120,26 @@ class RecEvaluator:
             return 1 / math.log2(label_rank + 2)
         return 0
 
+    def global_auc(self):
+        pos = [v for v, y in zip(self.auc_scores, self.auc_sents) if y == 1.0]
+        neg = [v for v, y in zip(self.auc_scores, self.auc_sents) if y == 0.0]
+        if not pos or not neg:
+            return 0.0
+
+        ordered = sorted(pos + neg)
+        mid_rank = {}
+        i = 0
+        while i < len(ordered):
+            j = i
+            while j + 1 < len(ordered) and ordered[j + 1] == ordered[i]:
+                j += 1
+            mid_rank[ordered[i]] = (i + j) / 2.0 + 1.0
+            i = j + 1
+
+        n_pos, n_neg = len(pos), len(neg)
+        rank_sum = sum(mid_rank[v] for v in pos)
+        return (rank_sum - n_pos * (n_pos + 1) / 2.0) / (n_pos * n_neg)
+
     def reset_metric(self):
         # PATCH 3: train_rec.py resets between the valid and test loops, so this marks the
         # boundary in the dump. hasattr guards the call __init__ makes before setup.
@@ -135,10 +161,14 @@ class RecEvaluator:
         self.metric_add['count_mse_neg'] = 0
         self.metric_add['auc_batch'] = 0
         self.metric_add['batch_count'] = 0
+        self.auc_scores = []
+        self.auc_sents = []
 
 
 
     def report(self):
+        self.metric_add['auc_global'] = self.global_auc()
+        self.metric_add['auc_global_count'] = 1
         report = {}
         report_add = {}
         for k, v in self.metric.items():
